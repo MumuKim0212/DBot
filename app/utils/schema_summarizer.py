@@ -44,11 +44,6 @@ def generate_summaries(schema_path: str, output_path: str):
 Here is a database table named '{table_name}'.
 Columns: {', '.join(columns)}
 
-Additional Information:
-- A user can have a maximum of 3 characters.
-- user_idx represents the user's ID.
-- char_idx represents the character's ID.
-
 Describe the purpose of this table in 1-2 sentences in Korean.
 Also, provide 3-5 Korean keywords related to this table.
 Return ONLY valid JSON in this format:

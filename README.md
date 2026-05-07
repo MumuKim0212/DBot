@@ -8,7 +8,7 @@
 - **자연어 기반 데이터 조회 (Text-to-SQL)**
   - 사용자가 자연어로 질문하면 LLM이 의도를 파악하여 적절한 SQL 쿼리를 생성하고 데이터를 반환합니다.
 - **RAG 기반 테이블 스키마 최적화**
-  - 전체 DB 스키마를 LLM에 전달하지 않고, **임베딩(Sentence-Transformers) 기반 시맨틱 검색**을 통해 질문과 연관된 핵심 테이블만 1차 선별합니다.
+  - 전체 DB 스키마를 LLM에 전달하지 않고, **임베딩(OpenAI Embeddings API) 기반 시맨틱 검색**을 통해 질문과 연관된 핵심 테이블만 1차 선별합니다.
   - 선별된 테이블의 관계(Relations)를 분석하여 JOIN에 필요한 테이블을 자동으로 확장(Relation Expansion)합니다.
 - **안전한 SQL 실행 엔진 (SQL Validator)**
   - `SELECT` 외의 데이터 조작(UPDATE, DELETE, DROP 등) 쿼리는 정규식과 키워드 매칭을 통해 실행 전 철저히 차단합니다.
@@ -17,11 +17,17 @@
   - OpenAI(GPT 모델)와 Anthropic(Claude 모델)을 지원하며, 환경변수 변경만으로 간편하게 API를 교체할 수 있습니다.
 - **채팅형 Web UI**
   - 직관적인 웹 인터페이스를 통해 사용자가 메신저를 사용하듯 간편하게 데이터를 질의하고 결과를 확인할 수 있습니다.
+- **Rule-based 캐싱 엔진 (비용 최적화)**
+  - 자주 묻는 특정 패턴의 질문은 LLM을 거치지 않고 정의된 SQL을 즉시 반환(Early Return)하여 응답 속도를 높이고 API 비용을 절감합니다.
+- **멀티 턴(Multi-turn) 대화 컨텍스트 유지**
+  - 세션 매니저를 통해 이전 질의의 테이블 문맥을 기억하여, "거기서 상위 5개만 보여줘"와 같은 주어가 생략된 후속 질문(Fallback)도 자연스럽게 처리합니다.
+- **안전한 쿼리 로깅 및 모니터링**
+  - 사용자의 자연어 질의, 생성된 SQL, 성공/에러 여부를 `logs/query_log.jsonl`에 회전(Rotating) 방식으로 자동 기록합니다.
 
 ## 🛠 기술 스택 (Tech Stack)
 
-- **Backend**: Python 3.10+, FastAPI, Sentence-Transformers (HuggingFace)
-- **Database**: MySQL
+- **Backend**: Python 3.10+, FastAPI, OpenAI Embeddings API (text-embedding-3-small)
+- **Database**: MySQL (단일 서버 및 Multi-Server 커넥션 풀 라우팅 지원)
 - **AI / LLM**: OpenAI API, Anthropic API
 - **Frontend**: React (CDN), Vanilla CSS
 
@@ -47,28 +53,48 @@ cp sample.env .env
 
 ### 3. 환경 변수 설정 (`.env`)
 
-`.env` 파일을 열어 다음 정보를 상황에 맞게 수정합니다.
+`.env` 파일을 열어 다음 정보를 상황에 맞게 수정합니다. 단일 서버 환경뿐만 아니라 다중 서버 라우팅 환경도 지원합니다.
 
 ```env
 LLM_PROVIDER=openai  # openai 또는 claude
 OPENAI_API_KEY=your_openai_api_key
 ANTHROPIC_API_KEY=your_anthropic_api_key
 
+# 1. 단일 DB 서버 연결 시
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=root
 MYSQL_PASSWORD=your_password
 MYSQL_DB=your_database_name
+
+# 2. (옵션) 다중 DB 서버 환경 구성 시 (DB_SERVERS JSON 배열 사용)
+# DB_SERVERS={"default": {"host": "...", "user": "...", "password": "...", "db": "..."}, "log_db": {...}}
 ```
 
-### 4. 서버 실행 (로컬 개발용)
+### 4. RAG 기반 테이블 스키마 데이터 파이프라인
+
+본격적인 서비스 구동 전, DBot이 데이터베이스 구조를 이해하고 시맨틱 검색을 수행할 수 있도록 데이터 파이프라인을 실행해야 합니다. (미리 생성된 파일이 있다면 생략 가능)
+
+```bash
+# 1. DB 스키마 자동 추출 (DB -> schema_full.json)
+python schema_extractor.py
+
+# 2. 스키마 요약 및 키워드 생성 (schema_full.json -> schema_index.json)
+python app/utils/schema_summarizer.py
+
+# 3. 요약된 텍스트를 벡터로 임베딩 (schema_index.json -> table_embeddings.json)
+python app/utils/embeddings.py
+```
+*완료되면 프로젝트 내에 테이블/컬럼/관계 정보와 LLM 검색용 벡터 임베딩 데이터가 모두 준비됩니다.*
+
+### 5. 서버 실행 (로컬 개발용)
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 - **웹 UI 접속**: 브라우저에서 `http://localhost:8000/` 로 접속하여 바로 서비스를 이용할 수 있습니다.
 
-### 5. Docker를 이용한 배포 (프로덕션/외부 서버용)
+### 6. Docker를 이용한 배포 (프로덕션/외부 서버용)
 
 Docker를 사용하면 환경 설정 없이 손쉽게 외부 서버에 프로젝트를 띄워둘 수 있습니다. 서버의 방화벽 설정에서 포트(예: 8000)를 미리 열어주어야 합니다.
 
