@@ -1,0 +1,91 @@
+# DBot (Data Assistant)
+
+자연어 질의를 통해 데이터베이스(MySQL)의 데이터를 조회하고 분석할 수 있는 **LLM 기반 SQL Agent 시스템**입니다. 
+대규모 데이터베이스 환경에서도 높은 정확도를 보장하고 API 비용을 최소화하기 위해 **시맨틱 검색(Semantic Search)**, **스키마 필터링(Schema Filtering)**, 그리고 **LLM**을 결합한 하이브리드(Hybrid) 아키텍처로 설계되었습니다.
+
+## ✨ 주요 기능 (Features)
+
+- **자연어 기반 데이터 조회 (Text-to-SQL)**
+  - 사용자가 자연어로 질문하면 LLM이 의도를 파악하여 적절한 SQL 쿼리를 생성하고 데이터를 반환합니다.
+- **RAG 기반 테이블 스키마 최적화**
+  - 전체 DB 스키마를 LLM에 전달하지 않고, **임베딩(Sentence-Transformers) 기반 시맨틱 검색**을 통해 질문과 연관된 핵심 테이블만 1차 선별합니다.
+  - 선별된 테이블의 관계(Relations)를 분석하여 JOIN에 필요한 테이블을 자동으로 확장(Relation Expansion)합니다.
+- **안전한 SQL 실행 엔진 (SQL Validator)**
+  - `SELECT` 외의 데이터 조작(UPDATE, DELETE, DROP 등) 쿼리는 정규식과 키워드 매칭을 통해 실행 전 철저히 차단합니다.
+  - 서버 측에서 `LIMIT`를 강제하여 대량의 데이터 조회로 인한 DB 부하를 방지합니다.
+- **유연한 LLM Provider 전환**
+  - OpenAI(GPT 모델)와 Anthropic(Claude 모델)을 지원하며, 환경변수 변경만으로 간편하게 API를 교체할 수 있습니다.
+- **채팅형 Web UI**
+  - 직관적인 웹 인터페이스를 통해 사용자가 메신저를 사용하듯 간편하게 데이터를 질의하고 결과를 확인할 수 있습니다.
+
+## 🛠 기술 스택 (Tech Stack)
+
+- **Backend**: Python 3.10+, FastAPI, Sentence-Transformers (HuggingFace)
+- **Database**: MySQL
+- **AI / LLM**: OpenAI API, Anthropic API
+- **Frontend**: React (CDN), Vanilla CSS
+
+## 🚀 시작하기 (Getting Started)
+
+### 1. 사전 요구 사항
+- Python 3.10 이상
+- MySQL 서버 접속 정보
+
+### 2. 설치
+
+```bash
+# 1. 저장소 클론
+git clone https://github.com/MumuKim0212/DBot.git
+cd DBot
+
+# 2. 파이썬 패키지 설치
+pip install -r requirements.txt
+
+# 3. 환경변수 파일 설정
+cp sample.env .env
+```
+
+### 3. 환경 변수 설정 (`.env`)
+
+`.env` 파일을 열어 다음 정보를 상황에 맞게 수정합니다.
+
+```env
+LLM_PROVIDER=openai  # openai 또는 claude
+OPENAI_API_KEY=your_openai_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key
+
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your_password
+MYSQL_DB=your_database_name
+```
+
+### 4. 서버 실행 (로컬 개발용)
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+- **웹 UI 접속**: 브라우저에서 `http://localhost:8000/` 로 접속하여 바로 서비스를 이용할 수 있습니다.
+
+### 5. Docker를 이용한 배포 (프로덕션/외부 서버용)
+
+Docker를 사용하면 환경 설정 없이 손쉽게 외부 서버에 프로젝트를 띄워둘 수 있습니다. 서버의 방화벽 설정에서 포트(예: 8000)를 미리 열어주어야 합니다.
+
+```bash
+# 1. Docker 이미지 빌드
+docker build -t dbot-app .
+
+# 2. 백그라운드에서 컨테이너 실행 (8000 포트로 포워딩)
+docker run -d -p 8000:8000 --env-file .env --name dbot-container dbot-app
+```
+- **웹 UI 접속**: 외부 서버의 공인 IP와 포트를 통해 브라우저에서 접속합니다. (예: `http://123.45.67.89:8000/`)
+
+## 📝 시스템 아키텍처 흐름
+
+1. **사용자 질의 (User Query)**: Web UI를 통해 자연어로 질문 입력
+2. **시맨틱 테이블 검색 (Semantic Table Selection)**: 질문의 임베딩 벡터와 테이블 메타데이터의 유사도를 비교해 관련성이 높은 테이블 선별
+3. **관계 확장 (Relation Expansion)**: 선별된 테이블과 조인(JOIN) 관계가 있는 주변 테이블 추가 포함
+4. **프롬프트 생성 (Prompt Building)**: 축소된 스키마 정보와 안전 제약 조건, 사용자 질의를 융합하여 LLM 프롬프트 조립
+5. **SQL 생성 및 검증 (SQL Gen & Validation)**: LLM이 생성한 SQL의 문법 및 안전성을 검사 (데이터 수정/삭제 쿼리 차단)
+6. **DB 조회 및 결과 반환**: 검증된 쿼리를 MySQL에 실행 후 쿼리 결과(Rows) 및 실행 내역을 Web UI로 전송
