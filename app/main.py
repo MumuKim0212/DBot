@@ -15,6 +15,8 @@ from app.core.schema_to_prompt import build_schema_text
 from app.core.prompt_builder import build_sql_prompt
 from app.core.selector import TableSelector
 from app.core.selector_utils import expand_with_relations
+from app.core.gate import GateChecker
+from app.core.visualizer import Visualizer
 from app.utils.query_logger import QueryLogger
 from app.database import get_db_connection, get_servers_config
 
@@ -29,6 +31,9 @@ selector = TableSelector(
     str(_DATA_DIR / "schema_index.json"),
     str(_DATA_DIR / "table_embeddings.json")
 )
+
+gate_checker = GateChecker(str(_DATA_DIR / "metrics_dictionary.json"))
+visualizer = Visualizer()
 
 logger = QueryLogger()
 
@@ -132,6 +137,11 @@ from app.core.rule_engine import rule_engine
 
 @app.post("/query")
 def run_query(req: QueryRequest):
+    # 0. Gate Check (Ambiguity & Required Params)
+    gate_res = gate_checker.check_query(req.query)
+    if gate_res.get("status") == "INCOMPLETE":
+        raise HTTPException(status_code=400, detail={"error": gate_res.get("message", "질문이 너무 모호합니다."), "code": "INCOMPLETE_QUERY"})
+
     selected = []
     sql = ""
     try:
@@ -151,7 +161,11 @@ def run_query(req: QueryRequest):
                 session_manager.update_context(req.session_id, req.query, sql, selected)
                 
             logger.log(req.query, selected, sql, status="rule", result_count=len(result))
-            return {"sql": sql, "result": result}
+            
+            columns = list(result[0].keys()) if result else []
+            chart_config = visualizer.generate_chart_config(req.query, columns)
+            
+            return {"sql": sql, "result": result, "chart_config": chart_config}
 
         # 2. LLM Pipeline
         schema_text, selected = prepare_schema(req.query, req.session_id)
@@ -183,8 +197,11 @@ def run_query(req: QueryRequest):
             try:
                 with get_db_connection(req.server_id) as conn:
                     cursor = conn.cursor(dictionary=True, buffered=True)
-                    cursor.execute(sql)
-                    result = cursor.fetchmany(_MAX_RESULT_ROWS)
+                    try:
+                        cursor.execute(sql)
+                        result = cursor.fetchmany(_MAX_RESULT_ROWS)
+                    finally:
+                        cursor.close()
                     break # Success!
             except mysql.connector.Error as db_err:
                 last_error = str(db_err)
@@ -198,7 +215,11 @@ def run_query(req: QueryRequest):
             session_manager.update_context(req.session_id, req.query, sql, selected)
 
         logger.log(req.query, selected, sql, status="ok", result_count=len(result))
-        return {"sql": sql, "result": result}
+        
+        columns = list(result[0].keys()) if result else []
+        chart_config = visualizer.generate_chart_config(req.query, columns)
+        
+        return {"sql": sql, "result": result, "chart_config": chart_config}
 
     except ValueError as e:
         msg = str(e)

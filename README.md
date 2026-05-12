@@ -19,6 +19,12 @@
   - 직관적인 웹 인터페이스를 통해 사용자가 메신저를 사용하듯 간편하게 데이터를 질의하고 결과를 확인할 수 있습니다.
 - **Rule-based 캐싱 엔진 (비용 최적화)**
   - 자주 묻는 특정 패턴의 질문은 LLM을 거치지 않고 정의된 SQL을 즉시 반환(Early Return)하여 응답 속도를 높이고 API 비용을 절감합니다.
+- **비즈니스 지표 사전 (Metric Registry)**
+  - 사내 표준 분석 기준과 필수 파라미터를 중앙화하여 LLM이 일관되고 정확한 비즈니스 로직의 SQL을 생성하도록 보장합니다.
+- **모호한 질문 방지 (Gate Checker)**
+  - 필수 조건이 누락된 모호한 질문은 사전에 차단하고 사용자에게 되묻는 기능을 통해 환각(Hallucination)과 불필요한 DB 조회를 방지합니다.
+- **결과 시각화 추천 (Visualizer)**
+  - 대량의 로우(Row) 데이터를 LLM에 보내지 않고, 결과 컬럼 메타데이터만으로 가장 적합한 차트 형태(Bar, Line, Pie 등)를 추천하여 API 비용과 응답 속도를 최적화합니다.
 - **멀티 턴(Multi-turn) 대화 컨텍스트 유지**
   - 세션 매니저를 통해 이전 질의의 테이블 문맥을 기억하여, "거기서 상위 5개만 보여줘"와 같은 주어가 생략된 후속 질문(Fallback)도 자연스럽게 처리합니다.
 - **안전한 쿼리 로깅 및 모니터링**
@@ -107,11 +113,60 @@ docker run -d -p 8000:8000 --env-file .env --name dbot-container dbot-app
 ```
 - **웹 UI 접속**: 외부 서버의 공인 IP와 포트를 통해 브라우저에서 접속합니다. (예: `http://123.45.67.89:8000/`)
 
+## ⚙️ 정확도 향상 옵션 (Optional Tuning)
+
+기본 설정만으로도 동작하지만, 아래 항목을 추가로 설정하면 SQL 생성 정확도와 안전성을 높일 수 있습니다.
+
+### 1. 비즈니스 지표 사전 (`metrics_dictionary.json`)
+
+**파일 위치**: `app/data/metrics_dictionary.json`
+
+사내 표준 분석 기준을 정의하면 두 가지 효과가 생깁니다.
+- **Gate**: 필수 조건(기간, 플랫폼 등)이 빠진 모호한 질문을 사전에 차단하고 되묻기
+- **SQL 생성**: 관련 지표의 비즈니스 로직(`description`)이 프롬프트에 자동 주입되어 취소 제외, 특정 상태 필터 등을 LLM이 직접 반영
+
+키워드 매칭으로 질문과 관련된 지표만 골라서 전송하므로 불필요한 토큰 낭비가 없습니다.
+
+```json
+{
+  "metrics": [
+    {
+      "name": "매출액",
+      "keywords": ["매출", "결제금액", "revenue"],
+      "description": "취소·환불 상태의 결제는 반드시 제외한다. status = 'completed' 조건을 WHERE 절에 포함해야 한다.",
+      "required_parameters": ["조회 시작일과 종료일"]
+    }
+  ]
+}
+```
+
+| 필드 | 설명 |
+|------|------|
+| `name` | 지표 이름. LLM이 질문과 매칭할 때 참고 |
+| `keywords` | 동의어·유사어 목록. 넉넉히 채울수록 매칭 정확도 상승 |
+| `description` | **핵심.** SQL 로직 규칙을 자연어로 기술 — 이 내용이 프롬프트에 그대로 주입됨 |
+| `required_parameters` | 없으면 `[]`. 명시된 조건이 질문에 빠지면 Gate가 되묻기 발동 |
+
+### 2. 대용량 테이블 강제 조건 (`mandatory_where_columns`)
+
+**파일 위치**: `app/data/schema_index.json`
+
+파티셔닝이 걸려 있거나 풀스캔이 위험한 테이블의 메타데이터에 `mandatory_where_columns`를 추가하면, Gate 및 프롬프트 단에서 해당 컬럼이 `WHERE` 절에 포함됐는지 검사하는 로직을 강화할 수 있습니다.
+
+```json
+"user_login_log": {
+  "summary": "유저의 접속 로그",
+  "keywords": ["로그인", "접속"],
+  "mandatory_where_columns": ["log_date", "server_id"]
+}
+```
+
 ## 📝 시스템 아키텍처 흐름
 
 1. **사용자 질의 (User Query)**: Web UI를 통해 자연어로 질문 입력
-2. **시맨틱 테이블 검색 (Semantic Table Selection)**: 질문의 임베딩 벡터와 테이블 메타데이터의 유사도를 비교해 관련성이 높은 테이블 선별
-3. **관계 확장 (Relation Expansion)**: 선별된 테이블과 조인(JOIN) 관계가 있는 주변 테이블 추가 포함
-4. **프롬프트 생성 (Prompt Building)**: 축소된 스키마 정보와 안전 제약 조건, 사용자 질의를 융합하여 LLM 프롬프트 조립
-5. **SQL 생성 및 검증 (SQL Gen & Validation)**: LLM이 생성한 SQL의 문법 및 안전성을 검사 (데이터 수정/삭제 쿼리 차단)
-6. **DB 조회 및 결과 반환**: 검증된 쿼리를 MySQL에 실행 후 쿼리 결과(Rows) 및 실행 내역을 Web UI로 전송
+2. **사전 검증 (Gate Checker)**: 지표 사전(Metric Registry)을 참고하여 질문의 필수 조건 포함 여부 확인 (부족할 경우 되묻기 반환)
+3. **시맨틱 테이블 검색 (Semantic Table Selection)**: 질문의 임베딩 벡터와 테이블 메타데이터의 유사도를 비교해 관련성이 높은 테이블 선별
+4. **관계 확장 (Relation Expansion)**: 선별된 테이블과 조인(JOIN) 관계가 있는 주변 테이블 추가 포함
+5. **프롬프트 생성 (Prompt Building)**: 축소된 스키마 정보와 안전 제약 조건, 사용자 질의를 융합하여 LLM 프롬프트 조립
+6. **SQL 생성 및 검증 (SQL Gen & Validation)**: LLM이 생성한 SQL의 문법 및 안전성을 검사 (데이터 수정/삭제 쿼리 차단)
+7. **DB 조회 및 시각화 구성 (Visualization)**: 검증된 쿼리를 실행한 후, 결과 데이터와 함께 최적의 차트 설정값(Visualizer)을 생성하여 Web UI로 전송

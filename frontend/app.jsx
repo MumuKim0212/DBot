@@ -149,14 +149,76 @@ function Sidebar({ chats, activeId, onSelect, onNew, onDelete, collapsed, onTogg
   );
 }
 
+// ───────────────────────────────────────────────────────────── chart
+const { useEffect: useChartEffect, useRef: useChartRef } = React;
+
+function ChartBlock({ chartConfig, rows }) {
+  const canvasRef = useChartRef(null);
+  const chartInstance = useChartRef(null);
+
+  useChartEffect(() => {
+    if (!chartConfig || chartConfig.type === "none" || !rows || rows.length === 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (chartInstance.current) {
+      chartInstance.current.destroy();
+    }
+
+    const labels = rows.map(r => r[chartConfig.x_axis] ?? "");
+    const yKeys = Array.isArray(chartConfig.y_axis) ? chartConfig.y_axis : [chartConfig.y_axis];
+    const COLORS = ["#5b8def", "#3ecf8e", "#c084fc", "#f59e0b", "#f87171"];
+
+    const datasets = yKeys.map((key, i) => ({
+      label: key,
+      data: rows.map(r => r[key] ?? 0),
+      backgroundColor: chartConfig.type === "line" ? "transparent" : COLORS[i % COLORS.length] + "cc",
+      borderColor: COLORS[i % COLORS.length],
+      borderWidth: 2,
+      tension: 0.3,
+      fill: false,
+    }));
+
+    const ctx = canvas.getContext("2d");
+    chartInstance.current = new Chart(ctx, {
+      type: chartConfig.type === "pie" ? "pie" : chartConfig.type,
+      data: chartConfig.type === "pie"
+        ? { labels, datasets: [{ data: rows.map(r => r[yKeys[0]] ?? 0), backgroundColor: COLORS.map(c => c + "cc"), borderColor: COLORS, borderWidth: 2 }] }
+        : { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { labels: { color: "var(--fg-2, #aaa)", font: { size: 12 } } },
+        },
+        scales: chartConfig.type === "pie" ? {} : {
+          x: { ticks: { color: "var(--fg-2, #aaa)" }, grid: { color: "rgba(255,255,255,0.06)" } },
+          y: { ticks: { color: "var(--fg-2, #aaa)" }, grid: { color: "rgba(255,255,255,0.06)" } },
+        },
+      },
+    });
+
+    return () => { chartInstance.current?.destroy(); };
+  }, [chartConfig, rows]);
+
+  if (!chartConfig || chartConfig.type === "none") return null;
+
+  return (
+    <div className="db-chart-wrap">
+      <canvas ref={canvasRef} />
+    </div>
+  );
+}
+
 // ───────────────────────────────────────────────────────────── messages + results
 function ResultBlock({ msg }) {
-  const [tab, setTab] = useState("table");
+  const hasChart = msg.chartConfig && msg.chartConfig.type !== "none";
+  const [tab, setTab] = useState(hasChart ? "chart" : "table");
   const [copied, setCopied] = useState(false);
   if (!msg.sql && !msg.rows) return null;
 
   const cols = msg.rows && msg.rows.length ? Object.keys(msg.rows[0]) : [];
-  const fmt = (v) => typeof v === "number" ? v.toLocaleString() : String(v);
+  const fmt = (v) => typeof v === "number" ? v.toLocaleString() : String(v ?? "");
 
   const copy = () => {
     navigator.clipboard?.writeText(msg.sql || "");
@@ -168,6 +230,11 @@ function ResultBlock({ msg }) {
     <div className="db-result">
       <div className="db-result__head">
         <div className="db-tabs">
+          {hasChart && (
+            <button className={"db-tab" + (tab === "chart" ? " db-tab--on" : "")} onClick={() => setTab("chart")}>
+              <Icon name="trend" size={13} /> 차트
+            </button>
+          )}
           <button className={"db-tab" + (tab === "table" ? " db-tab--on" : "")} onClick={() => setTab("table")}>
             <Icon name="table" size={13} /> 결과 {msg.rows ? `(${msg.rows.length})` : ""}
           </button>
@@ -183,6 +250,9 @@ function ResultBlock({ msg }) {
         </div>
       </div>
 
+      {tab === "chart" && (
+        <ChartBlock chartConfig={msg.chartConfig} rows={msg.rows} />
+      )}
       {tab === "sql" && (
         <pre className="db-sql"><code>{msg.sql}</code></pre>
       )}
@@ -217,7 +287,7 @@ function Message({ msg }) {
       <div className="db-asst">
         <div className="db-asst__avatar"><Icon name="db" size={14} /></div>
         <div className="db-asst__body">
-          <div className="db-asst__text">{msg.text}</div>
+          <div className={"db-asst__text" + (msg.isQuestion ? " db-asst__text--question" : "")}>{msg.text}</div>
           <ResultBlock msg={msg} />
         </div>
       </div>
@@ -435,11 +505,17 @@ function App() {
           sql: data.sql,
           rows: data.result,
           ms: ms,
+          chartConfig: data.chart_config,
         };
       } else {
+        const detail = data.detail || {};
+        const isIncomplete = detail.code === "INCOMPLETE_QUERY";
         reply = {
           role: "assistant",
-          text: `오류가 발생했습니다: ${data.detail?.error || data.error || '알 수 없는 오류'}`,
+          text: isIncomplete
+            ? detail.error
+            : `오류가 발생했습니다: ${detail.error || data.error || '알 수 없는 오류'}`,
+          isQuestion: isIncomplete,
           ms: ms,
         };
       }
